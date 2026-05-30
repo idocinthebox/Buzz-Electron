@@ -120,9 +120,11 @@ class WhisperCpp:
     
         # Force CPU if specified
         force_cpu = os.getenv("BUZZ_FORCE_CPU", "false")
+        using_gpu = False
         if force_cpu != "false" or (not IS_VULKAN_SUPPORTED and platform.system() != "Darwin"):
             cmd.extend(["--no-gpu"])
         else:
+            using_gpu = True
             # Select a specific Vulkan GPU when requested (BUZZ_WHISPER_DEVICE=N).
             # On multi-GPU machines the default device 0 may be an integrated GPU
             # whose Vulkan driver crashes whisper.cpp (Windows 0xC0000409); the
@@ -131,47 +133,61 @@ class WhisperCpp:
             if gpu_device.isdigit():
                 cmd.extend(["--device", gpu_device])
 
-        print(f"Running Whisper CLI: {' '.join(cmd)}")
+        def _run_whisper(run_cmd):
+            """Run whisper-cli, streaming stderr for progress. Returns
+            (returncode, stderr_lines)."""
+            print(f"Running Whisper CLI: {' '.join(run_cmd)}")
+            if sys.platform == "win32":
+                si = subprocess.STARTUPINFO()
+                si.dwFlags |= subprocess.STARTF_USESHOWWINDOW
+                si.wShowWindow = subprocess.SW_HIDE
+                proc = subprocess.Popen(
+                    run_cmd, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE,
+                    text=True, encoding="utf-8", errors="replace",
+                    startupinfo=si, env=app_env,
+                    creationflags=subprocess.CREATE_NO_WINDOW,
+                )
+            else:
+                proc = subprocess.Popen(
+                    run_cmd, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE,
+                    text=True, encoding="utf-8", errors="replace",
+                )
+            lines = []
+            while True:
+                line = proc.stderr.readline()
+                if not line:
+                    break
+                lines.append(line.strip())
+                sys.stderr.write(line)  # progress
+            proc.wait()
+            return proc.returncode, lines
 
-        # Run the whisper-cli process
-        if sys.platform == "win32":
-            si = subprocess.STARTUPINFO()
-            si.dwFlags |= subprocess.STARTF_USESHOWWINDOW
-            si.wShowWindow = subprocess.SW_HIDE
-            process = subprocess.Popen(
-                cmd,
-                stdout=subprocess.DEVNULL,
-                stderr=subprocess.PIPE,
-                text=True,
-                encoding="utf-8",
-                errors="replace",
-                startupinfo=si,
-                env=app_env,
-                creationflags=subprocess.CREATE_NO_WINDOW
+        returncode, stderr_output = _run_whisper(cmd)
+
+        # Auto-fallback: a GPU run that crashes (e.g. a flaky integrated-GPU
+        # Vulkan driver, Windows 0xC0000409) leaves no usable output. Retry
+        # once on CPU so transcription still succeeds without user config.
+        if returncode != 0 and using_gpu:
+            logging.warning(
+                "whisper-cli GPU run failed (code %s); retrying on CPU (--no-gpu)",
+                returncode,
             )
-        else:
-            process = subprocess.Popen(
-                cmd,
-                stdout=subprocess.DEVNULL,
-                stderr=subprocess.PIPE,
-                text=True,
-                encoding="utf-8",
-                errors="replace",
-            )
-    
-        # Capture stderr for progress updates
-        stderr_output = []
-        while True:
-            line = process.stderr.readline()
-            if not line:
-                break
-            stderr_output.append(line.strip())
-            # Progress is written to stderr
-            sys.stderr.write(line)
-    
-        process.wait()
-    
-        if process.returncode != 0:
+            # Strip "--device N" (single pass) and force CPU.
+            cpu_cmd = []
+            skip_next = False
+            for a in cmd:
+                if skip_next:
+                    skip_next = False
+                    continue
+                if a == "--device":
+                    skip_next = True  # also drop the index argument
+                    continue
+                cpu_cmd.append(a)
+            if "--no-gpu" not in cpu_cmd:
+                cpu_cmd.append("--no-gpu")
+            returncode, stderr_output = _run_whisper(cpu_cmd)
+
+        if returncode != 0:
             # Clean up temp file if conversion was done
             if temp_file and os.path.exists(temp_file):
                 try:
@@ -179,7 +195,7 @@ class WhisperCpp:
                 except Exception as e:
                     print(f"Failed to remove temporary file {temp_file}: {e}")
             error_details = "\n".join(stderr_output[-10:]) if stderr_output else "No error output."
-            raise Exception(f"whisper-cli failed with return code {process.returncode}\nDetails: {error_details}")
+            raise Exception(f"whisper-cli failed with return code {returncode}\nDetails: {error_details}")
 
         # Find and read the generated JSON file
         # whisper-cli generates: input_file.ext.json (e.g., file.mp3.json)
