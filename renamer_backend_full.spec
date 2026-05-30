@@ -27,8 +27,11 @@ datas = []
 datas += [(str(ROOT / 'buzz' / 'assets'), 'buzz/assets')]
 
 # buzz DB schema — required by run_sqlite_migrations() via get_path("schema.sql").
-# Without this the transcription task database fails to initialize at runtime.
-datas += [(str(ROOT / 'buzz' / 'schema.sql'), 'buzz')]
+# When frozen, APP_BASE_DIR == sys._MEIPASS (the _internal root), so get_path()
+# resolves to _internal/schema.sql — bundle it at the root ('.'), NOT under
+# buzz/. Without this the transcription task database fails to initialize with
+# "FileNotFoundError: ... _internal\schema.sql".
+datas += [(str(ROOT / 'buzz' / 'schema.sql'), '.')]
 
 # buzz locale (translations)
 datas += [(str(ROOT / 'buzz' / 'locale'), 'buzz/locale')]
