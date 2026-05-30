@@ -10,6 +10,12 @@ contextBridge.exposeInMainWorld('electronAPI', {
   openFolder:     ()       => ipcRenderer.invoke('dialog:openFolder'),
   openModelFile:  ()       => ipcRenderer.invoke('dialog:openModelFile'),
   openUndoLog:    (folder) => ipcRenderer.invoke('dialog:openUndoLog', folder),
+  // Transcription dialogs
+  openFiles:      ()          => ipcRenderer.invoke('dialog:openFiles'),
+  saveFile:       (suggested) => ipcRenderer.invoke('dialog:saveFile', suggested),
+
+  // Persist GPU prefs so the backend launches with the right env next start
+  setGpuPref:     (prefs)     => ipcRenderer.invoke('prefs:setGpu', prefs),
 
   // Window controls (custom title bar)
   minimize: () => ipcRenderer.send('window:minimize'),

@@ -26,6 +26,10 @@ datas = []
 # buzz assets (icons, SVGs, banner image)
 datas += [(str(ROOT / 'buzz' / 'assets'), 'buzz/assets')]
 
+# buzz DB schema — required by run_sqlite_migrations() via get_path("schema.sql").
+# Without this the transcription task database fails to initialize at runtime.
+datas += [(str(ROOT / 'buzz' / 'schema.sql'), 'buzz')]
+
 # buzz locale (translations)
 datas += [(str(ROOT / 'buzz' / 'locale'), 'buzz/locale')]
 
@@ -51,20 +55,33 @@ hiddenimports = [
     'buzz.transcriber.faster_whisper_file_transcriber',
     'buzz.transcriber.transcriber',
     'buzz.transcriber.whisper_cpp',
+    'buzz.transcriber.file_transcriber',
+    'buzz.transcriber.openai_whisper_api_file_transcriber',
     'buzz.model_loader',
     'buzz.whisper_audio',
     'buzz.assets',
     'buzz.locale',
     'buzz.settings',
     'buzz.store',
+    # ── Transcription DB layer (SQLite task persistence) ────────────
+    'buzz.db.db',
+    'buzz.db.helpers',
+    'buzz.db.dao.dao',
+    'buzz.db.dao.transcription_dao',
+    'buzz.db.dao.transcription_segment_dao',
+    'buzz.db.entity.entity',
+    'buzz.db.entity.transcription',
+    'buzz.db.entity.transcription_segment',
+    'buzz.db.service.transcription_service',
     # ── WebSocket server ────────────────────────────────────────────
     'websockets',
     'websockets.server',
     'websockets.legacy.server',
     'websockets.asyncio.server',
-    # ── Qt (headless core only) ─────────────────────────────────────
+    # ── Qt (headless core + SQL for the task database) ──────────────
     'PyQt6.QtCore',
     'PyQt6.QtNetwork',
+    'PyQt6.QtSql',
     # ── Whisper backends ────────────────────────────────────────────
     'whisper',
     'faster_whisper',

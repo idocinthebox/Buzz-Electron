@@ -57,6 +57,17 @@ let backendPort = null;
 // onStatus({percent, message}) is called for each STATUS:<pct>:<msg> line the
 // backend prints during its (slow) import/startup, so the splash can show real
 // progress. Resolves with the port once the backend prints PORT:<n>.
+// Read persisted GPU prefs (written by the renderer's Settings toggles) so the
+// backend can be launched with the right env. The whisper-cli GPU path crashes
+// on some machines (Windows exit 0xC0000409); "Disable GPU" forces the CPU path.
+function readGpuPrefs() {
+  try {
+    const p = path.join(app.getPath('userData'), 'gpu-prefs.json');
+    if (fs.existsSync(p)) return JSON.parse(fs.readFileSync(p, 'utf-8'));
+  } catch (_) { /* ignore — fall back to defaults */ }
+  return { forceCpu: false, reduceGpu: false };
+}
+
 function launchBackend({ onStatus } = {}) {
   return new Promise((resolve, reject) => {
     const { exe, args, cwd } = getPythonBackendArgs();
@@ -64,8 +75,14 @@ function launchBackend({ onStatus } = {}) {
     console.log(`[main] Spawning backend: ${exe} ${args.join(' ')}`);
     console.log(`[main] CWD: ${cwd}`);
 
+    const prefs = readGpuPrefs();
+    const backendEnv = { ...process.env };
+    if (prefs.forceCpu)  backendEnv.BUZZ_FORCE_CPU = 'true';
+    if (prefs.reduceGpu) backendEnv.BUZZ_REDUCE_GPU_MEMORY = 'true';
+
     backendProcess = spawn(exe, args, {
       cwd,
+      env: backendEnv,
       stdio: ['ignore', 'pipe', 'pipe'],
       windowsHide: true,
     });
@@ -183,6 +200,44 @@ ipcMain.handle('dialog:openUndoLog', async (_, folder) => {
     filters: [{ name: 'Undo logs', extensions: ['json'] }],
   });
   return result.canceled ? null : result.filePaths[0];
+});
+
+// Transcription: multi-select audio/video files
+ipcMain.handle('dialog:openFiles', async () => {
+  const result = await dialog.showOpenDialog(mainWindow, {
+    properties: ['openFile', 'multiSelections'],
+    title: 'Select audio or video files',
+    filters: [
+      { name: 'Media files', extensions: ['mp3', 'wav', 'm4a', 'ogg', 'opus', 'flac', 'mp4', 'webm', 'mov', 'mkv', 'avi', 'wmv'] },
+      { name: 'All files', extensions: ['*'] },
+    ],
+  });
+  return result.canceled ? [] : result.filePaths;
+});
+
+// Transcription: save-as for transcript export
+ipcMain.handle('dialog:saveFile', async (_, suggestedName) => {
+  const result = await dialog.showSaveDialog(mainWindow, {
+    title: 'Export transcript',
+    defaultPath: suggestedName || 'transcript.srt',
+    filters: [
+      { name: 'Subtitles / Text', extensions: ['srt', 'vtt', 'txt'] },
+      { name: 'All files', extensions: ['*'] },
+    ],
+  });
+  return result.canceled ? null : result.filePath;
+});
+
+// Persist GPU prefs (consumed by readGpuPrefs() on next backend launch).
+ipcMain.handle('prefs:setGpu', (_, prefs) => {
+  try {
+    const p = path.join(app.getPath('userData'), 'gpu-prefs.json');
+    fs.writeFileSync(p, JSON.stringify(prefs || {}), 'utf-8');
+    return true;
+  } catch (err) {
+    console.error('[main] Failed to write gpu-prefs:', err);
+    return false;
+  }
 });
 
 // Window controls (custom title bar)

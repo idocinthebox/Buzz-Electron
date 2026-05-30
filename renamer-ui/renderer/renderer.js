@@ -139,12 +139,20 @@ settingShowLog.addEventListener('change', () => {
   applyLogVisibility(v);
 });
 
-settingReduceGpu.addEventListener('change', () => {
+function persistGpuPrefs() {
   localStorage.setItem('reduceGpu', settingReduceGpu.checked);
-});
-settingForceCpu.addEventListener('change', () => {
   localStorage.setItem('forceCpu', settingForceCpu.checked);
-});
+  // Persist to disk so main.js launches the backend with the right env.
+  if (window.electronAPI && window.electronAPI.setGpuPref) {
+    window.electronAPI.setGpuPref({
+      forceCpu: settingForceCpu.checked,
+      reduceGpu: settingReduceGpu.checked,
+    });
+  }
+  showToast('GPU setting saved — restart the app to apply.', 'info', 6000);
+}
+settingReduceGpu.addEventListener('change', persistGpuPrefs);
+settingForceCpu.addEventListener('change', persistGpuPrefs);
 
 $('btn-settings').addEventListener('click', () => {
   settingsOverlay.style.display = 'block';
@@ -426,6 +434,9 @@ function connect() {
     appendLog('Connected to Buzz backend.', 'info');
     send({ cmd: 'list_models' });
     send({ cmd: 'list_languages' });
+    if (window.BuzzBus && typeof window.BuzzBus.onReady === 'function') {
+      window.BuzzBus.onReady();
+    }
   });
 
   ws.addEventListener('close', () => {
@@ -443,9 +454,23 @@ function connect() {
     let msg;
     try { msg = JSON.parse(e.data); }
     catch { return; }
+    // Give the Transcribe page first refusal on its own events; if it claims
+    // the event, the renamer handler is skipped. This keeps one shared socket.
+    if (window.BuzzBus && window.BuzzBus._onEvent && window.BuzzBus._onEvent(msg)) {
+      return;
+    }
     handleServerEvent(msg);
   });
 }
+
+// ─── Shared bus: lets transcribe.js reuse this single WebSocket ───────────────
+window.BuzzBus = {
+  send,                       // shared send()
+  _onEvent: null,             // transcribe.js installs an (msg)=>bool handler
+  onReady: null,              // called once on ws 'open'
+  appendLog,                  // shared log pane
+  showToast,                  // shared toasts
+};
 
 function send(obj) {
   if (ws && ws.readyState === WebSocket.OPEN) {
@@ -839,8 +864,26 @@ function handleServerEvent(msg) {
   }
 }
 
+// ─── Tab navigation ───────────────────────────────────────────────────────────
+const tabButtons = document.querySelectorAll('.tab-btn');
+const tabPages   = { transcribe: $('page-transcribe'), rename: $('page-rename') };
+
+function switchTab(name) {
+  tabButtons.forEach(b => b.classList.toggle('active', b.dataset.tab === name));
+  Object.entries(tabPages).forEach(([key, el]) => {
+    if (el) el.classList.toggle('active', key === name);
+  });
+  // The settings gear + log pane belong to the renamer page only.
+  window.dispatchEvent(new CustomEvent('buzz:tabchange', { detail: { tab: name } }));
+}
+
+tabButtons.forEach(btn => {
+  btn.addEventListener('click', () => switchTab(btn.dataset.tab));
+});
+
 // ─── Init ─────────────────────────────────────────────────────────────────────
 loadSettings();
 updateButtons();
 updateModelSections();
+switchTab('transcribe');
 connect();

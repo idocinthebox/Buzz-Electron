@@ -149,11 +149,46 @@ from buzz.transcriber.bulk_renamer import (  # noqa: E402
     apply_plan,
     undo_from_log,
 )
-from buzz.transcriber.transcriber import LANGUAGES, Task, TranscriptionOptions  # noqa: E402
+from buzz.transcriber.transcriber import (  # noqa: E402
+    LANGUAGES,
+    Task,
+    TranscriptionOptions,
+    FileTranscriptionOptions,
+    FileTranscriptionTask,
+    OutputFormat,
+    Segment,
+)
+from buzz.transcriber.file_transcriber import write_output  # noqa: E402
+from buzz.transcriber.whisper_file_transcriber import WhisperFileTranscriber  # noqa: E402
+
+# DB layer (transcription task persistence). Imported in the main process only;
+# QSqlDatabase/QSqlQuery are NOT thread-safe, so every DB call in this server
+# stays on the asyncio main thread — only the blocking transcribe() runs in an
+# executor thread (see _cmd_start_transcription).
+from buzz.db.db import setup_app_db  # noqa: E402
+from buzz.db.dao.transcription_dao import TranscriptionDAO  # noqa: E402
+from buzz.db.dao.transcription_segment_dao import TranscriptionSegmentDAO  # noqa: E402
+from buzz.db.service.transcription_service import TranscriptionService  # noqa: E402
 
 _status(85, "Finalizing")
 
 log = logging.getLogger(__name__)
+
+# Set up the SQLite database + service once, in the main process only.
+# (multiprocessing 'spawn' children re-import this module but must not touch Qt.)
+_db = None
+_transcription_service: Optional[TranscriptionService] = None
+if multiprocessing.parent_process() is None:
+    try:
+        _db = setup_app_db()
+        _transcription_dao = TranscriptionDAO(_db)
+        _transcription_segment_dao = TranscriptionSegmentDAO(_db)
+        _transcription_service = TranscriptionService(
+            _transcription_dao, _transcription_segment_dao
+        )
+    except Exception:  # pragma: no cover - defensive
+        logging.exception("Failed to initialize transcription database")
+        _transcription_service = None
 logging.basicConfig(level=logging.INFO, stream=sys.stderr,
                     format="%(levelname)s %(name)s: %(message)s")
 
@@ -233,6 +268,65 @@ def _build_config(raw: Dict[str, Any]) -> RenamerConfig:
         keep_numeric_prefix=bool(raw.get("keep_numeric_prefix", False)),
         collision_strategy=raw.get("collision_strategy", "suffix"),
     )
+
+
+def _build_transcription_options(raw: Dict[str, Any]) -> TranscriptionOptions:
+    """Build TranscriptionOptions from the UI config block (transcription tab).
+
+    Mirrors _build_config but produces full-transcription options (honours
+    word_level_timings, the Translate task, and the chosen language).
+    """
+    model_type_str = raw.get("model_type", ModelType.WHISPER_CPP.value)
+    try:
+        model_type = ModelType(model_type_str)
+    except ValueError:
+        model_type = ModelType.WHISPER_CPP
+
+    size_str = raw.get("model_size", WhisperModelSize.BASE.value)
+    try:
+        size = WhisperModelSize(size_str)
+    except ValueError:
+        size = WhisperModelSize.BASE
+
+    model = TranscriptionModel(
+        model_type=model_type,
+        whisper_model_size=size,
+        hugging_face_model_id=raw.get("hugging_face_model_id", ""),
+    )
+
+    task_str = raw.get("task", Task.TRANSCRIBE.value)
+    try:
+        task = Task(task_str)
+    except ValueError:
+        task = Task.TRANSCRIBE
+
+    return TranscriptionOptions(
+        language=raw.get("language") or None,
+        task=task,
+        model=model,
+        word_level_timings=bool(raw.get("word_level_timings", False)),
+        extract_speech=False,
+        initial_prompt=raw.get("initial_prompt", ""),
+    )
+
+
+def _transcription_row_to_dict(row) -> Dict[str, Any]:
+    """Serialize a Transcription DB entity (or QSqlRecord-derived dict) for the UI."""
+    return {
+        "id": row.id,
+        "file": row.file,
+        "name": row.name or (os.path.basename(row.file) if row.file else ""),
+        "status": row.status,
+        "task": row.task,
+        "model_type": row.model_type,
+        "model_size": row.whisper_model_size,
+        "language": row.language,
+        "progress": float(row.progress or 0.0),
+        "error": row.error_message,
+        "time_queued": row.time_queued,
+        "time_started": row.time_started,
+        "time_ended": row.time_ended,
+    }
 
 
 # ---------------------------------------------------------------------------
@@ -598,10 +692,269 @@ class _Session:
                                "message": "No active download to cancel.",
                                "level": "warn"})
 
+    # ---- transcription handlers --------------------------------------------
+    # All DB access below runs on the asyncio main thread (QSqlDatabase is not
+    # thread-safe). Only WhisperFileTranscriber.transcribe() — pure
+    # multiprocessing, no Qt — is offloaded to an executor thread.
+
+    async def _cmd_import_files(self, msg: Dict) -> None:
+        """Create QUEUED transcription rows for the given file paths."""
+        if _transcription_service is None:
+            await self._send({"event": "error",
+                               "message": "Transcription database unavailable."})
+            return
+
+        paths = [p for p in msg.get("files", []) if p]
+        if not paths:
+            await self._send({"event": "error", "message": "No files provided."})
+            return
+
+        options = _build_transcription_options(msg.get("config", {}))
+        export_formats = set()
+        for fmt in msg.get("export_formats", []):
+            try:
+                export_formats.add(OutputFormat(fmt))
+            except ValueError:
+                pass
+
+        created = []
+        for path in paths:
+            if not os.path.isfile(path):
+                await self._send({"event": "log",
+                                   "message": f"Skipped (not a file): {path}",
+                                   "level": "warn"})
+                continue
+            task = FileTranscriptionTask(
+                transcription_options=options,
+                file_transcription_options=FileTranscriptionOptions(
+                    file_paths=[path], output_formats=export_formats
+                ),
+                model_path="",
+                file_path=path,
+                source=FileTranscriptionTask.Source.FILE_IMPORT,
+                status=FileTranscriptionTask.Status.QUEUED,
+            )
+            _transcription_service.create_transcription(task)
+            row = _transcription_dao.find_by_id(str(task.uid))
+            if row is not None:
+                created.append(_transcription_row_to_dict(row))
+
+        await self._send({"event": "files_imported", "tasks": created})
+
+    async def _cmd_get_tasks(self, _msg: Dict) -> None:
+        await self._send({"event": "tasks", "tasks": self._list_tasks()})
+
+    def _list_tasks(self) -> List[Dict[str, Any]]:
+        """Read every transcription row (most-recent first). Main thread only."""
+        if _transcription_service is None:
+            return []
+        from PyQt6.QtSql import QSqlQuery
+        query = QSqlQuery(_db)
+        query.prepare("SELECT * FROM transcription ORDER BY time_queued DESC")
+        rows: List[Dict[str, Any]] = []
+        if query.exec():
+            while query.next():
+                rec = query.record()
+                row = _transcription_dao.to_entity(rec)
+                rows.append(_transcription_row_to_dict(row))
+        return rows
+
+    async def _cmd_start_transcription(self, msg: Dict) -> None:
+        """Transcribe a queued task; stream progress; persist segments."""
+        if _transcription_service is None:
+            await self._send({"event": "error",
+                               "message": "Transcription database unavailable."})
+            return
+
+        task_id = msg.get("id")
+        row = _transcription_dao.find_by_id(str(task_id)) if task_id else None
+        if row is None:
+            await self._send({"event": "error",
+                               "message": f"Task not found: {task_id}"})
+            return
+
+        uid = row.id_as_uuid
+        options = _build_transcription_options({
+            "model_type": row.model_type,
+            "model_size": row.whisper_model_size,
+            "language": row.language,
+            "task": row.task,
+            "hugging_face_model_id": row.hugging_face_model_id or "",
+            "word_level_timings": str(row.word_level_timings).lower() == "true",
+        })
+        model_path = options.model.get_local_model_path() or ""
+        if not model_path and options.model.model_type == ModelType.WHISPER_CPP:
+            await self._send({"event": "error",
+                               "message": "No local model found. Download a model first."})
+            return
+
+        task = FileTranscriptionTask(
+            transcription_options=options,
+            file_transcription_options=FileTranscriptionOptions(
+                file_paths=[row.file]
+            ),
+            model_path=model_path,
+            file_path=row.file,
+            uid=uid,
+        )
+
+        self._cancel_event.clear()
+        _transcription_service.update_transcription_as_started(uid)
+        await self._send({"event": "task_started", "id": str(uid)})
+
+        transcriber = WhisperFileTranscriber(task=task)
+        self._active_transcriber = transcriber
+
+        # Run the blocking transcribe() off the event loop; it manages its own
+        # multiprocessing child + read thread internally.
+        try:
+            segments: List[Segment] = await self._loop.run_in_executor(
+                None, transcriber.transcribe
+            )
+        except Exception as exc:  # transcription failed or canceled
+            self._active_transcriber = None
+            err = str(exc)
+            if "cancel" in err.lower():
+                _transcription_service.update_transcription_as_canceled(uid)
+                await self._send({"event": "task_canceled", "id": str(uid)})
+            else:
+                _transcription_service.update_transcription_as_failed(uid, err)
+                await self._send({"event": "task_error",
+                                   "id": str(uid), "message": err})
+            return
+
+        self._active_transcriber = None
+
+        # The whisper-cli child can crash (e.g. a GPU/Vulkan fault, Windows exit
+        # 0xC0000409) yet still exit the *Python* child cleanly — transcribe()
+        # then returns [] without raising. Detect that here so the user gets a
+        # real error (with a fix hint) instead of a silently empty transcript.
+        child_error = getattr(transcriber, "error_message", None)
+        if child_error:
+            _transcription_service.update_transcription_as_failed(uid, child_error)
+            hint = ""
+            if not os.getenv("BUZZ_FORCE_CPU", "false").lower() == "true":
+                hint = (" — if this is a GPU/driver crash, enable "
+                        "“Disable GPU” in Settings and retry.")
+            await self._send({"event": "task_error", "id": str(uid),
+                               "message": f"{child_error}{hint}"})
+            return
+
+        # Persist segments + mark completed (main thread).
+        _transcription_service.update_transcription_as_completed(uid, segments)
+
+        await self._send({
+            "event": "task_completed",
+            "id": str(uid),
+            "segment_count": len(segments),
+        })
+
+    async def _cmd_cancel_transcription(self, _msg: Dict) -> None:
+        self._cancel_event.set()
+        transcriber = getattr(self, "_active_transcriber", None)
+        if transcriber is not None:
+            transcriber.stop()
+            await self._send({"event": "log",
+                               "message": "Transcription cancellation requested.",
+                               "level": "warn"})
+
+    async def _cmd_get_segments(self, msg: Dict) -> None:
+        if _transcription_service is None:
+            await self._send({"event": "error",
+                               "message": "Transcription database unavailable."})
+            return
+        task_id = msg.get("id")
+        segments = _transcription_service.get_transcription_segments(task_id)
+        await self._send({
+            "event": "segments",
+            "id": str(task_id),
+            "segments": [
+                {"id": s.id, "start": s.start_time, "end": s.end_time,
+                 "text": s.text, "translation": s.translation}
+                for s in segments
+            ],
+        })
+
+    async def _cmd_update_segment(self, msg: Dict) -> None:
+        """Edit a segment's text by rewriting that transcription's segments."""
+        if _transcription_service is None:
+            return
+        task_id = msg.get("id")
+        seg_id = msg.get("segment_id")
+        new_text = msg.get("text", "")
+        existing = _transcription_service.get_transcription_segments(task_id)
+        rebuilt = [
+            Segment(
+                start=s.start_time,
+                end=s.end_time,
+                text=new_text if s.id == seg_id else s.text,
+            )
+            for s in existing
+        ]
+        _transcription_service.replace_transcription_segments(task_id, rebuilt)
+        await self._send({"event": "segment_updated",
+                          "id": str(task_id), "segment_id": seg_id})
+
+    async def _cmd_export_transcript(self, msg: Dict) -> None:
+        """Write a completed transcript to TXT/SRT/VTT and return the path."""
+        if _transcription_service is None:
+            return
+        task_id = msg.get("id")
+        fmt_str = msg.get("format", "srt")
+        out_path = msg.get("output_path")  # provided by the renderer's save dialog
+        try:
+            output_format = OutputFormat(fmt_str)
+        except ValueError:
+            await self._send({"event": "error",
+                               "message": f"Unknown export format: {fmt_str}"})
+            return
+
+        db_segments = _transcription_service.get_transcription_segments(task_id)
+        if not db_segments:
+            await self._send({"event": "error",
+                               "message": "No segments to export."})
+            return
+        segments = [
+            Segment(start=s.start_time, end=s.end_time, text=s.text,
+                    translation=s.translation or "")
+            for s in db_segments
+        ]
+
+        if not out_path:
+            row = _transcription_dao.find_by_id(str(task_id))
+            out_path = row.get_output_file_path(output_format) if row else None
+        if not out_path:
+            await self._send({"event": "error",
+                               "message": "No output path for export."})
+            return
+
+        try:
+            write_output(out_path, segments, output_format)
+        except Exception as exc:
+            await self._send({"event": "error",
+                               "message": f"Export failed: {exc}"})
+            return
+
+        await self._send({"event": "export_done",
+                          "id": str(task_id), "path": out_path})
+
+    async def _cmd_delete_task(self, msg: Dict) -> None:
+        if _transcription_service is None:
+            return
+        task_id = msg.get("id")
+        from PyQt6.QtSql import QSqlQuery
+        # Segments are removed via ON DELETE CASCADE (foreign_keys = ON).
+        query = QSqlQuery(_db)
+        query.prepare("DELETE FROM transcription WHERE id = :id")
+        query.bindValue(":id", str(task_id))
+        query.exec()
+        await self._send({"event": "task_deleted", "id": str(task_id)})
+
     # ---- main loop ----------------------------------------------------------
 
     async def run(self) -> None:
         self._active_loader = None
+        self._active_transcriber = None
         await self._send({"event": "ready"})
         async for raw in self._ws:
             try:
@@ -630,6 +983,23 @@ class _Session:
                 await self._cmd_cancel_download(msg)
             elif cmd == "list_languages":
                 await self._cmd_list_languages(msg)
+            # ---- transcription commands ----
+            elif cmd == "import_files":
+                await self._cmd_import_files(msg)
+            elif cmd == "get_tasks":
+                await self._cmd_get_tasks(msg)
+            elif cmd == "start_transcription":
+                await self._cmd_start_transcription(msg)
+            elif cmd == "cancel_transcription":
+                await self._cmd_cancel_transcription(msg)
+            elif cmd == "get_segments":
+                await self._cmd_get_segments(msg)
+            elif cmd == "update_segment":
+                await self._cmd_update_segment(msg)
+            elif cmd == "export_transcript":
+                await self._cmd_export_transcript(msg)
+            elif cmd == "delete_task":
+                await self._cmd_delete_task(msg)
             else:
                 log.warning("Unknown command: %s", cmd)
 

@@ -1134,3 +1134,155 @@ code {
   color: var(--text-dim);
   font-style: italic;
 }
+
+/* ═════════════════════════════════════════════════════════════
+   Tabbed shell (Transcribe | Rename)
+   ═════════════════════════════════════════════════════════════ */
+:root { --tab-rail-width: 76px; }
+
+.tab-rail {
+  position: fixed;
+  top: var(--titlebar-height);
+  left: 0;
+  bottom: 0;
+  width: var(--tab-rail-width);
+  background: var(--grad-sidebar);
+  border-right: 1px solid var(--border);
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  padding: 10px 0;
+  gap: 4px;
+  z-index: 500;
+}
+
+.tab-btn {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 5px;
+  padding: 12px 4px;
+  margin: 0 8px;
+  border: none;
+  border-radius: var(--radius-md);
+  background: transparent;
+  color: var(--text-secondary);
+  cursor: pointer;
+  font-family: var(--font-sans);
+  font-size: 10.5px;
+  font-weight: 500;
+  transition: background 0.15s, color 0.15s;
+}
+.tab-btn svg { opacity: 0.85; }
+.tab-btn:hover { background: var(--bg-hover); color: var(--text-primary); }
+.tab-btn.active {
+  background: var(--bg-hover);
+  color: var(--accent-purple);
+  box-shadow: inset 2px 0 0 var(--accent-purple);
+}
+.tab-btn.active svg { opacity: 1; }
+
+/* Pages: only the active one shows. Offset content past the tab rail. */
+.tab-page { display: none; }
+.tab-page.active { display: block; }
+.tab-page .app-layout { padding-left: var(--tab-rail-width); }
+
+/* ── Transcribe: task table extra columns ── */
+.col-tx-model    { width: 150px; }
+.col-tx-progress { width: 130px; }
+.tx-file {
+  max-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* status badges */
+.tx-badge {
+  display: inline-block;
+  padding: 2px 9px;
+  border-radius: 999px;
+  font-size: 11px;
+  font-weight: 600;
+  white-space: nowrap;
+}
+.tx-queued      { background: rgba(255,255,255,0.08); color: var(--text-secondary); }
+.tx-in_progress { background: rgba(139,92,246,0.18);  color: var(--accent-purple); }
+.tx-completed   { background: rgba(16,185,129,0.16);  color: var(--accent-green); }
+.tx-failed      { background: rgba(239,68,68,0.16);   color: var(--accent-red); }
+.tx-canceled    { background: rgba(245,158,11,0.16);  color: var(--accent-amber); }
+
+.mini-progress {
+  height: 6px;
+  background: rgba(255,255,255,0.08);
+  border-radius: 999px;
+  overflow: hidden;
+}
+.mini-progress-fill {
+  height: 100%;
+  background: var(--grad-purple-cyan);
+  border-radius: 999px;
+  transition: width 0.25s ease-out;
+}
+
+.tx-row-actions { white-space: nowrap; text-align: right; }
+.row-act {
+  border: none;
+  background: transparent;
+  color: var(--text-secondary);
+  cursor: pointer;
+  font-size: 11.5px;
+  font-family: var(--font-sans);
+  padding: 3px 7px;
+  border-radius: var(--radius-sm);
+}
+.row-act:hover { background: var(--bg-hover); color: var(--text-primary); }
+.row-act-del:hover { color: var(--accent-red); }
+
+/* ── Transcript viewer ── */
+.viewer {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  border-top: 1px solid var(--border);
+  min-height: 0;
+}
+.viewer-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 10px 16px;
+  background: var(--bg-sidebar);
+  border-bottom: 1px solid var(--border);
+  font-weight: 600;
+}
+.viewer-actions { display: flex; align-items: center; gap: 8px; }
+.btn-sm { padding: 4px 12px; font-size: 12px; }
+.viewer-body { flex: 1; overflow-y: auto; }
+
+.segments-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 12.5px;
+}
+.segments-table thead th {
+  position: sticky;
+  top: 0;
+  background: var(--bg-app);
+  text-align: left;
+  padding: 8px 14px;
+  color: var(--text-dim);
+  font-weight: 600;
+  border-bottom: 1px solid var(--border);
+}
+.segments-table td {
+  padding: 7px 14px;
+  border-bottom: 1px solid rgba(255,255,255,0.04);
+  vertical-align: top;
+}
+.col-seg-time { width: 110px; }
+.seg-time { font-family: var(--font-mono); color: var(--text-code); white-space: nowrap; }
+.seg-text { outline: none; }
+.seg-text:focus { background: var(--bg-hover); border-radius: var(--radius-sm); }
+.segments-table .muted { color: var(--text-dim); text-align: center; padding: 24px; }
