@@ -114,9 +114,11 @@ a = Analysis(
     hooksconfig={},
     runtime_hooks=[],
     excludes=[
-        # GUI-only Qt modules not needed for headless server
-        'PyQt6.QtWidgets',
-        'PyQt6.QtGui',
+        # GUI-only Qt modules not needed for the headless server.
+        # NOTE: QtGui and QtWidgets are NOT excluded — PyQt6.QtSql (used by
+        # buzz.db for the transcription task database) imports them
+        # transitively, so excluding them makes the packaged backend crash at
+        # startup with "ModuleNotFoundError: No module named 'PyQt6.QtGui'".
         'PyQt6.QtMultimedia',
         'PyQt6.QtWebEngineWidgets',
         # Development / test tools

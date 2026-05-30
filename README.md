@@ -1,106 +1,97 @@
-[[简体中文](readme/README.zh_CN.md)] <- 点击查看中文页面。
+# Buzz Electron
 
-# Buzz
+**Buzz with audio file renaming built in and a beautiful Electron front end.**
 
-[Documentation](https://chidiwilliams.github.io/buzz/)
-
-Transcribe and translate audio offline on your personal computer. Powered by
-OpenAI's [Whisper](https://github.com/openai/whisper).
+Transcribe and translate audio offline on your personal computer, powered by
+OpenAI's [Whisper](https://github.com/openai/whisper) — now with a modern
+Electron desktop UI and a built-in bulk audio renamer that names files from
+their spoken content.
 
 ![MIT License](https://img.shields.io/badge/license-MIT-green)
-[![CI](https://github.com/chidiwilliams/buzz/actions/workflows/ci.yml/badge.svg)](https://github.com/chidiwilliams/buzz/actions/workflows/ci.yml)
-[![codecov](https://codecov.io/github/chidiwilliams/buzz/branch/main/graph/badge.svg?token=YJSB8S2VEP)](https://codecov.io/github/chidiwilliams/buzz)
-![GitHub release (latest by date)](https://img.shields.io/github/v/release/chidiwilliams/buzz)
-[![Github all releases](https://img.shields.io/github/downloads/chidiwilliams/buzz/total.svg)](https://GitHub.com/chidiwilliams/buzz/releases/)
+![Platform](https://img.shields.io/badge/platform-Windows%20x64-blue)
 
-![Buzz](https://raw.githubusercontent.com/chidiwilliams/buzz/refs/heads/main/buzz/assets/buzz-banner.jpg)
+> **This is a fork of [Buzz](https://github.com/chidiwilliams/buzz)** by
+> Chidi Williams. It keeps Buzz's transcription engine and adds an Electron
+> front end, a bulk renamer, and dependency security mitigations. All original
+> Buzz functionality and credit belong to the upstream project.
+
+---
+
+## What's new in this fork
+
+- **🖥️ Electron desktop UI** — a modern, themed interface with a tabbed layout
+  (**Transcribe** | **Rename**), custom title bar, and a live startup splash
+  with a real progress bar fed by the backend.
+- **✏️ Bulk audio renamer** — transcribe a folder of audio files and rename
+  each one from its spoken content, with preview, collision handling, and a
+  one-click undo of the last batch.
+- **🎙️ Transcribe tab** — import audio/video files, transcribe with Whisper.cpp /
+  Faster Whisper / OpenAI Whisper, view and edit segments, and export to
+  TXT / SRT / VTT. Tasks persist across restarts (SQLite).
+- **🛡️ CVE mitigations** — 56 dependency advisories across 16 packages cleared
+  via safe, non-breaking upgrades. See **[SECURITY.md](SECURITY.md)** for the
+  full before/after audit and the honestly-documented deferred items.
+- **🔧 Robustness fixes** — GPU/driver transcription crashes are now surfaced
+  with a clear "Disable GPU" hint instead of silently producing empty output,
+  and the Disable-GPU setting now actually reaches the backend.
 
 ## Features
-- Transcribe audio and video files or Youtube links
-- Live realtime audio transcription from microphone
-  - Presentation window for easy accessibility during events and presentations
-- Speech separation before transcription for better accuracy on noisy audio
-- Speaker identification in transcribed media
-- Multiple whisper backend support
-  - CUDA acceleration support for Nvidia GPUs
-  - Apple Silicon support for Macs
-  - Vulkan acceleration support for Whisper.cpp on most GPUs, including integrated GPUs
-- Export transcripts to TXT, SRT, and VTT
-- Advanced Transcription Viewer with search, playback controls, and speed adjustment
-- Keyboard shortcuts for efficient navigation
-- Watch folder for automatic transcription of new files
-- Command-Line Interface for scripting and automation
 
-## Installation
+- Transcribe and translate audio & video files (Whisper.cpp, Faster Whisper,
+  OpenAI Whisper, Hugging Face models)
+- Bulk-rename audio files from their transcribed content
+- Editable transcript viewer; export to **TXT, SRT, VTT**
+- Task queue with persistence across app restarts
+- ~100 languages with auto-detect
+- Local model download manager
+- Runs fully offline on your own machine
 
-### macOS
+## Install / Build (Windows)
 
-Download the `.dmg` from the [SourceForge](https://sourceforge.net/projects/buzz-captions/files/).
+This fork ships as a self-contained Windows build (Electron UI + a bundled
+Python backend with Whisper, produced via PyInstaller).
 
-### Windows
+**One-click build:**
 
-Get the installation files from the [SourceForge](https://sourceforge.net/projects/buzz-captions/files/).
-
-App is not signed, you will get a warning when you install it. Select `More info` -> `Run anyway`.
-
-### Linux
-
-Buzz is available as a [Flatpak](https://flathub.org/apps/io.github.chidiwilliams.Buzz) or a [Snap](https://snapcraft.io/buzz). 
-
-To install flatpak, run:
-```shell
-flatpak install flathub io.github.chidiwilliams.Buzz
+```bat
+build_renamer.bat
 ```
 
-[![Download on Flathub](https://flathub.org/api/badge?svg&locale=en)](https://flathub.org/en/apps/io.github.chidiwilliams.Buzz)
+This rebuilds the Python backend and packages the Electron app into
+`D:\Renamer Electron` (edit `OUTPUT_DIR` at the top of the script to change the
+destination). The output `Buzz Renamer-1.0.0-win.zip` is fully portable — unzip
+and run `Buzz Renamer.exe`; no installation required.
 
-To install snap, run:
-```shell
-sudo apt-get install libportaudio2 libcanberra-gtk-module libcanberra-gtk3-module
-sudo snap install buzz
+**Run from source (development):**
+
+```bash
+uv sync                       # set up the Python environment
+cd renamer-ui && npm install  # Electron dependencies
+npm start                     # launches the UI against the venv backend
 ```
 
-[![Get it from the Snap Store](https://snapcraft.io/static/images/badges/en/snap-store-black.svg)](https://snapcraft.io/buzz)
+> **Tip:** if transcription produces no output on your machine, the GPU path may
+> be crashing on your drivers. Open **Settings → Disable GPU** and restart — the
+> app will transcribe on CPU.
 
-### PyPI
+## Security
 
-Install [ffmpeg](https://www.ffmpeg.org/download.html)
+Dependency CVEs are tracked and mitigated. The full report — what was fixed,
+what's deferred and why — lives in **[SECURITY.md](SECURITY.md)**. Re-run the
+audit anytime with `pip-audit` (Python) and `npm audit` (Electron).
 
-Ensure you use Python 3.12 environment.
+## Credits
 
-Install Buzz
+- **[Buzz](https://github.com/chidiwilliams/buzz)** by Chidi Williams — the
+  upstream transcription application this fork is built on.
+- **[Whisper](https://github.com/openai/whisper)** by OpenAI — the underlying
+  speech-recognition models.
+- **[whisper.cpp](https://github.com/ggml-org/whisper.cpp)** by Georgi Gerganov
+  — the fast C++ Whisper backend.
 
-```shell
-pip install buzz-captions
-python -m buzz
-```
+## License
 
-**GPU support for PyPI**
-
-To have GPU support for Nvidia GPUS on Windows, for PyPI installed version ensure, CUDA support for [torch](https://pytorch.org/get-started/locally/) 
-
-```
-pip3 install -U torch==2.8.0+cu129 torchaudio==2.8.0+cu129 --index-url https://download.pytorch.org/whl/cu129
-pip3 install nvidia-cublas-cu12==12.9.1.4 nvidia-cuda-cupti-cu12==12.9.79 nvidia-cuda-runtime-cu12==12.9.79 --extra-index-url https://pypi.ngc.nvidia.com
-```
-
-### Latest development version
-
-For info on how to get latest development version with latest features and bug fixes see [FAQ](https://chidiwilliams.github.io/buzz/docs/faq#9-where-can-i-get-latest-development-version).
-
-### Support Buzz
-
-You can help the Buzz by starring 🌟 the repo and sharing it with your friends.
-
-### Screenshots
-
-<div style="display: flex; flex-wrap: wrap;">
-    <img alt="File import" src="https://github.com/chidiwilliams/buzz/raw/main/share/screenshots/buzz-1-import.png" style="max-width: 18%; margin-right: 1%;" />
-    <img alt="Main screen" src="https://github.com/chidiwilliams/buzz/raw/main/share/screenshots/buzz-2-main_screen.png" style="max-width: 18%; margin-right: 1%; height:auto;" />
-    <img alt="Preferences" src="https://github.com/chidiwilliams/buzz/raw/main/share/screenshots/buzz-3-preferences.png" style="max-width: 18%; margin-right: 1%; height:auto;" />
-    <img alt="Model preferences" src="https://github.com/chidiwilliams/buzz/raw/main/share/screenshots/buzz-3.2-model-preferences.png" style="max-width: 18%; margin-right: 1%; height:auto;" />
-    <img alt="Transcript" src="https://github.com/chidiwilliams/buzz/raw/main/share/screenshots/buzz-4-transcript.png" style="max-width: 18%; margin-right: 1%; height:auto;" />
-    <img alt="Live recording" src="https://github.com/chidiwilliams/buzz/raw/main/share/screenshots/buzz-5-live_recording.png" style="max-width: 18%; margin-right: 1%; height:auto;" />
-    <img alt="Resize" src="https://github.com/chidiwilliams/buzz/raw/main/share/screenshots/buzz-6-resize.png" style="max-width: 18%;" />
-</div>
-
+[MIT](LICENSE). This fork retains the original Buzz copyright
+(© 2022 Chidi Williams) and adds the fork author's copyright for the Electron
+UI, renamer, and security work (© 2026 idocinthebox), as required by the MIT
+license.
