@@ -110,6 +110,7 @@ const settingsOverlay = $('settings-overlay');
 const settingShowLog  = $('setting-show-log');
 const settingReduceGpu= $('setting-reduce-gpu');
 const settingForceCpu = $('setting-force-cpu');
+const settingGpuDevice= $('setting-gpu-device');
 
 // Load settings from localStorage
 function loadSettings() {
@@ -120,6 +121,10 @@ function loadSettings() {
   settingShowLog.checked   = showLog;
   settingReduceGpu.checked = reduceGpu;
   settingForceCpu.checked  = forceCpu;
+  // GPU device selection (populated later from the backend; keep the saved
+  // value so it's reselected once the option list arrives).
+  const savedGpu = localStorage.getItem('gpuDevice') || '';
+  if (settingGpuDevice) settingGpuDevice.value = savedGpu;
 
   applyLogVisibility(showLog);
 }
@@ -142,17 +147,34 @@ settingShowLog.addEventListener('change', () => {
 function persistGpuPrefs() {
   localStorage.setItem('reduceGpu', settingReduceGpu.checked);
   localStorage.setItem('forceCpu', settingForceCpu.checked);
+  localStorage.setItem('gpuDevice', settingGpuDevice.value);
   // Persist to disk so main.js launches the backend with the right env.
   if (window.electronAPI && window.electronAPI.setGpuPref) {
     window.electronAPI.setGpuPref({
       forceCpu: settingForceCpu.checked,
       reduceGpu: settingReduceGpu.checked,
+      gpuDevice: settingGpuDevice.value,  // "" = auto, or a device index
     });
   }
   showToast('GPU setting saved — restart the app to apply.', 'info', 6000);
 }
 settingReduceGpu.addEventListener('change', persistGpuPrefs);
 settingForceCpu.addEventListener('change', persistGpuPrefs);
+settingGpuDevice.addEventListener('change', persistGpuPrefs);
+
+// Populate the GPU picker from the backend's Vulkan enumeration.
+function populateGpuDevices(gpus) {
+  const saved = localStorage.getItem('gpuDevice') || '';
+  settingGpuDevice.innerHTML = '<option value="">Auto (default)</option>';
+  gpus.forEach(g => {
+    const opt = document.createElement('option');
+    opt.value = String(g.index);
+    const tag = g.type === 'discrete' ? ' ⚡' : g.type === 'integrated' ? ' (integrated)' : '';
+    opt.textContent = `${g.index}: ${g.name}${tag}`;
+    settingGpuDevice.appendChild(opt);
+  });
+  settingGpuDevice.value = saved;
+}
 
 $('btn-settings').addEventListener('click', () => {
   settingsOverlay.style.display = 'block';
@@ -434,6 +456,7 @@ function connect() {
     appendLog('Connected to Buzz backend.', 'info');
     send({ cmd: 'list_models' });
     send({ cmd: 'list_languages' });
+    send({ cmd: 'list_gpus' });
     if (window.BuzzBus && typeof window.BuzzBus.onReady === 'function') {
       window.BuzzBus.onReady();
     }
@@ -725,6 +748,10 @@ function handleServerEvent(msg) {
 
     case 'languages':
       populateLanguages(msg.languages);
+      break;
+
+    case 'gpus':
+      populateGpuDevices(msg.gpus || []);
       break;
 
     case 'log':

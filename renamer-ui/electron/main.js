@@ -79,6 +79,11 @@ function launchBackend({ onStatus } = {}) {
     const backendEnv = { ...process.env };
     if (prefs.forceCpu)  backendEnv.BUZZ_FORCE_CPU = 'true';
     if (prefs.reduceGpu) backendEnv.BUZZ_REDUCE_GPU_MEMORY = 'true';
+    // Select a specific Vulkan GPU (multi-GPU machines: avoid a crashing iGPU).
+    if (prefs.gpuDevice !== undefined && prefs.gpuDevice !== null &&
+        String(prefs.gpuDevice) !== '') {
+      backendEnv.BUZZ_WHISPER_DEVICE = String(prefs.gpuDevice);
+    }
 
     backendProcess = spawn(exe, args, {
       cwd,

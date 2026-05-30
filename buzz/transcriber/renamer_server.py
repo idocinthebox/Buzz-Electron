@@ -393,6 +393,109 @@ class _Session:
             })
         await self._send({"event": "models", "models": models})
 
+    async def _cmd_list_gpus(self, _msg: Dict) -> None:
+        """Enumerate the GPUs whisper.cpp sees, for the UI device picker.
+
+        IMPORTANT: we parse whisper-cli's own ``ggml_vulkan: N = <name>`` init
+        lines rather than the Python ``vulkan`` package, because the two
+        enumerate devices in *different order* — only whisper.cpp's order
+        matches the ``--device N`` flag. We run it with ``--no-gpu`` so the
+        Vulkan devices are still enumerated at init but compute stays on CPU,
+        avoiding the integrated-GPU crash during this probe.
+        """
+        gpus = await self._loop.run_in_executor(None, self._enumerate_gpus)
+        await self._send({"event": "gpus", "gpus": gpus})
+
+    @staticmethod
+    def _enumerate_gpus() -> List[Dict[str, Any]]:
+        """Return GPUs in whisper.cpp's --device order.
+
+        Strategy: run whisper-cli with --no-gpu against a tiny synthesized
+        silent WAV. That makes ggml_vulkan enumerate the Vulkan devices at init
+        (printing the authoritative ``ggml_vulkan: N = <name>`` order that
+        matches --device N) while computing on CPU, so the probe can't trigger
+        the integrated-GPU crash. Requires a local whisper.cpp model; if none
+        is available the picker stays on "Auto" (empty list).
+        """
+        import re as _re
+        import struct
+        import subprocess
+        import tempfile
+
+        cli = "whisper-cli.exe" if sys.platform == "win32" else "whisper-cli"
+        cli_path = os.path.join(APP_BASE_DIR, "whisper_cpp", cli)
+        if not os.path.exists(cli_path):
+            cli_path = os.path.join(APP_BASE_DIR, "buzz", "whisper_cpp", cli)
+        if not os.path.exists(cli_path):
+            return []
+
+        # Need any local whisper.cpp model to make the CLI init the backend.
+        try:
+            model_path = TranscriptionModel(
+                model_type=ModelType.WHISPER_CPP,
+                whisper_model_size=WhisperModelSize.TINY,
+            ).get_local_model_path()
+        except Exception:
+            model_path = None
+        if not model_path or not os.path.exists(model_path):
+            return []
+
+        # Synthesize a tiny silent 16 kHz mono WAV (0.1 s) to feed the probe.
+        tmp = os.path.join(tempfile.gettempdir(), "buzz_gpuprobe.wav")
+        try:
+            n = 1600  # 0.1 s @ 16 kHz
+            data = b"\x00\x00" * n
+            with open(tmp, "wb") as f:
+                f.write(b"RIFF")
+                f.write(struct.pack("<I", 36 + len(data)))
+                f.write(b"WAVEfmt ")
+                f.write(struct.pack("<IHHIIHH", 16, 1, 1, 16000, 32000, 2, 16))
+                f.write(b"data")
+                f.write(struct.pack("<I", len(data)))
+                f.write(data)
+        except Exception as exc:  # pragma: no cover - defensive
+            log.info("GPU probe WAV write failed: %s", exc)
+            return []
+
+        kwargs: Dict[str, Any] = dict(capture_output=True, text=True, timeout=60)
+        if sys.platform == "win32":
+            si = subprocess.STARTUPINFO()
+            si.dwFlags |= subprocess.STARTF_USESHOWWINDOW
+            si.wShowWindow = subprocess.SW_HIDE
+            kwargs["startupinfo"] = si
+            kwargs["creationflags"] = subprocess.CREATE_NO_WINDOW
+
+        try:
+            proc = subprocess.run(
+                [cli_path, "--no-gpu", "--model", model_path, "-f", tmp],
+                **kwargs,
+            )
+            out = (proc.stderr or "") + (proc.stdout or "")
+        except Exception as exc:  # pragma: no cover - defensive
+            log.info("GPU enumeration failed: %s", exc)
+            return []
+        finally:
+            try:
+                os.remove(tmp)
+            except OSError:
+                pass
+
+        gpus: List[Dict[str, Any]] = []
+        for m in _re.finditer(
+            r"ggml_vulkan:\s*(\d+)\s*=\s*(.+?)\s*\|", out
+        ):
+            idx = int(m.group(1))
+            # name is like "AMD Radeon(TM) 890M Graphics (AMD proprietary driver)"
+            name = _re.sub(r"\s*\([^)]*\)\s*$", "", m.group(2)).strip()
+            uma = bool(_re.search(rf"ggml_vulkan:\s*{idx}\s*=.*?uma:\s*1", out))
+            gpus.append({
+                "index": idx,
+                "name": name,
+                # uma:1 ⇒ unified-memory (integrated) GPU.
+                "type": "integrated" if uma else "discrete",
+            })
+        return gpus
+
     async def _cmd_list_languages(self, _msg: Dict) -> None:
         """Return all Whisper-supported languages sorted alphabetically by name."""
         langs = sorted(
@@ -983,6 +1086,8 @@ class _Session:
                 await self._cmd_cancel_download(msg)
             elif cmd == "list_languages":
                 await self._cmd_list_languages(msg)
+            elif cmd == "list_gpus":
+                await self._cmd_list_gpus(msg)
             # ---- transcription commands ----
             elif cmd == "import_files":
                 await self._cmd_import_files(msg)

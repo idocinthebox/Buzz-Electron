@@ -122,6 +122,14 @@ class WhisperCpp:
         force_cpu = os.getenv("BUZZ_FORCE_CPU", "false")
         if force_cpu != "false" or (not IS_VULKAN_SUPPORTED and platform.system() != "Darwin"):
             cmd.extend(["--no-gpu"])
+        else:
+            # Select a specific Vulkan GPU when requested (BUZZ_WHISPER_DEVICE=N).
+            # On multi-GPU machines the default device 0 may be an integrated GPU
+            # whose Vulkan driver crashes whisper.cpp (Windows 0xC0000409); the
+            # UI lets the user pick the working discrete GPU instead.
+            gpu_device = os.getenv("BUZZ_WHISPER_DEVICE", "")
+            if gpu_device.isdigit():
+                cmd.extend(["--device", gpu_device])
 
         print(f"Running Whisper CLI: {' '.join(cmd)}")
 
